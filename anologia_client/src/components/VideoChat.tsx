@@ -30,6 +30,60 @@ export default function VideoChat({ onStop }: VideoChatProps) {
   const streamRef = useRef<MediaStream | null>(null);
   const peerRef = useRef<SimplePeer.Instance | null>(null);
 
+  // Safe video play function
+  const safeVideoPlay = async (videoElement: HTMLVideoElement) => {
+    try {
+      // Check if video element still has a source
+      if (!videoElement.srcObject) {
+        return;
+      }
+
+      // Only try to play if not already playing
+      if (videoElement.paused) {
+        await videoElement.play();
+        console.log("Video play successful");
+      }
+    } catch (error) {
+      // Handle specific play errors gracefully
+      if (error instanceof Error) {
+        if (error.name === "AbortError") {
+          console.log(
+            "Video play was interrupted (this is normal during stream changes)"
+          );
+          // Don't log this as an error - it's expected behavior
+        } else if (error.name === "NotAllowedError") {
+          console.warn(
+            "Video play not allowed - user interaction may be required"
+          );
+        } else {
+          console.error("Video play error:", error.message);
+        }
+      }
+    }
+  };
+
+  // Safe stream assignment function
+  const setVideoStream = async (
+    videoElement: HTMLVideoElement,
+    stream: MediaStream | null
+  ) => {
+    // Stop any ongoing play attempts by pausing first
+    if (!videoElement.paused) {
+      videoElement.pause();
+    }
+
+    // Wait a tick to ensure pause is processed
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Set new source
+    videoElement.srcObject = stream;
+
+    // Try to play if we have a stream
+    if (stream) {
+      await safeVideoPlay(videoElement);
+    }
+  };
+
   // Get server URL - improved for cross-device testing
   const getServerUrl = () => {
     // First priority: environment variable
@@ -43,16 +97,16 @@ export default function VideoChat({ onStop }: VideoChatProps) {
 
       // If accessing via localhost, use localhost for server too
       if (hostname === "localhost" || hostname === "127.0.0.1") {
-        return `http://${hostname}:8080`;
+        return `https://${hostname}:8080`;
       }
-      // If accessing via IP (like from mobile), use same IP for server
+      // If accessing via IP (like from mobile), use SAME IP for server
       else if (hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-        return `http://192.168.1.106:8080`;
+        return `https://${hostname}:8080`; // ✅ Use the SAME IP, not hardcoded
       }
     }
 
     // Fallback - REPLACE THIS WITH YOUR ACTUAL PC IP
-    return "http://127.0.0.1:8080"; // ⚠️ CHANGE THIS TO YOUR PC's IP
+    return "https://192.168.1.106:8080"; // Only used if detection fails
   };
 
   // Initialize media stream
@@ -85,9 +139,7 @@ export default function VideoChat({ onStop }: VideoChatProps) {
         streamRef.current = stream;
 
         if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-          // Ensure video plays
-          localVideoRef.current.play().catch(console.error);
+          await setVideoStream(localVideoRef.current, stream);
         }
 
         setConnectionStatus("Connecting to server...");
@@ -138,6 +190,31 @@ export default function VideoChat({ onStop }: VideoChatProps) {
 
     const serverUrl = getServerUrl();
     console.log("Connecting to server:", serverUrl);
+
+    // 🔍 DEBUG: Log all the details
+    console.log("=== CONNECTION DEBUG ===");
+    console.log("Window hostname:", window.location.hostname);
+    console.log("Window origin:", window.location.origin);
+    console.log("Process env:", process.env.NEXT_PUBLIC_SERVER_URL);
+    console.log("Calculated server URL:", serverUrl);
+    console.log("========================");
+
+    // Test if server is reachable
+    fetch(`${serverUrl}/health`)
+      .then((response) => {
+        console.log("✅ Server health check successful:", response.status);
+        return response.json();
+      })
+      .then((data) => {
+        console.log("Server health data:", data);
+      })
+      .catch((error) => {
+        console.error("❌ Server health check failed:", error);
+        setConnectionStatus(`Server unreachable: ${serverUrl}`);
+        return; // Don't try to connect if server is unreachable
+      });
+
+    console.log("Attempting to connect to:", serverUrl);
 
     const newSocket = io(serverUrl, {
       transports: ["websocket", "polling"], // Fallback to polling if websocket fails
@@ -239,11 +316,11 @@ export default function VideoChat({ onStop }: VideoChatProps) {
       socketInstance.emit("signal", data);
     });
 
-    newPeer.on("stream", (remoteStream) => {
+    // Updated peer stream handler
+    newPeer.on("stream", async (remoteStream) => {
       console.log("Received remote stream");
       if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
-        remoteVideoRef.current.play().catch(console.error);
+        await setVideoStream(remoteVideoRef.current, remoteStream);
       }
       setIsConnected(true);
       setConnectionStatus("Connected");
@@ -270,7 +347,8 @@ export default function VideoChat({ onStop }: VideoChatProps) {
     peerRef.current = newPeer;
   };
 
-  const handlePeerDisconnected = () => {
+  // Updated disconnect handler
+  const handlePeerDisconnected = async () => {
     console.log("Handling peer disconnection");
     setIsConnected(false);
     setIsWaiting(true);
@@ -283,11 +361,12 @@ export default function VideoChat({ onStop }: VideoChatProps) {
     }
 
     if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
+      await setVideoStream(remoteVideoRef.current, null);
     }
   };
 
-  const handleSkip = () => {
+  // Updated skip handler
+  const handleSkip = async () => {
     console.log("Skipping to next peer");
     if (socket) {
       socket.emit("find-next");
@@ -304,7 +383,7 @@ export default function VideoChat({ onStop }: VideoChatProps) {
     setConnectionStatus("Looking for someone new...");
 
     if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
+      await setVideoStream(remoteVideoRef.current, null);
     }
   };
 

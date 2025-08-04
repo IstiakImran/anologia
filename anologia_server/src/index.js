@@ -1,6 +1,9 @@
 // server/src/index.js
 const express = require("express");
 const http = require("http");
+const https = require("https");
+const fs = require("fs");
+const path = require("path");
 const { Server } = require("socket.io");
 const cors = require("cors");
 
@@ -19,7 +22,67 @@ app.get("/health", (req, res) => {
   });
 });
 
-const server = http.createServer(app);
+// HTTPS Configuration
+const useHTTPS = process.env.USE_HTTPS === 'true' || process.env.NODE_ENV === 'production';
+let server;
+
+if (useHTTPS) {
+  // Try to load SSL certificates
+  let sslOptions;
+  try {
+    // Look for certificates in multiple locations
+    const certPaths = [
+      // mkcert generated certificates
+      { key: 'localhost+2-key.pem', cert: 'localhost+2.pem' },
+      // OpenSSL generated certificates
+      { key: 'private-key.pem', cert: 'certificate.pem' },
+      // Alternative names
+      { key: 'server-key.pem', cert: 'server-cert.pem' },
+      // Production paths (if specified via env vars)
+      {
+        key: process.env.SSL_KEY_PATH || '/etc/ssl/private/server.key',
+        cert: process.env.SSL_CERT_PATH || '/etc/ssl/certs/server.crt'
+      }
+    ];
+
+    let certificatesFound = false;
+    for (const paths of certPaths) {
+      if (fs.existsSync(paths.key) && fs.existsSync(paths.cert)) {
+        sslOptions = {
+          key: fs.readFileSync(paths.key),
+          cert: fs.readFileSync(paths.cert)
+        };
+        certificatesFound = true;
+        console.log(`✅ SSL certificates loaded: ${paths.key}, ${paths.cert}`);
+        break;
+      }
+    }
+
+    if (!certificatesFound) {
+      console.log('⚠️  No SSL certificates found. Falling back to HTTP.');
+      console.log('📋 To enable HTTPS, generate certificates using:');
+      console.log('   Option 1 (mkcert - recommended for development):');
+      console.log('     brew install mkcert  # or appropriate package manager');
+      console.log('     mkcert -install');
+      console.log('     mkcert localhost 127.0.0.1 ::1');
+      console.log('');
+      console.log('   Option 2 (OpenSSL):');
+      console.log('     openssl genrsa -out private-key.pem 2048');
+      console.log('     openssl req -new -x509 -key private-key.pem -out certificate.pem -days 365');
+      console.log('');
+      server = http.createServer(app);
+    } else {
+      server = https.createServer(sslOptions, app);
+    }
+  } catch (error) {
+    console.error('❌ Error loading SSL certificates:', error.message);
+    console.log('📋 Falling back to HTTP server');
+    server = http.createServer(app);
+  }
+} else {
+  server = http.createServer(app);
+}
+
 const io = new Server(server, {
   cors: {
     origin: "*", // Allow all origins for development - CHANGE THIS FOR PRODUCTION
@@ -202,20 +265,23 @@ const PORT = process.env.PORT || 8080;
 const HOST = "0.0.0.0"; // Bind to all network interfaces
 
 server.listen(PORT, HOST, () => {
-  console.log(`🚀 Enhanced signaling server running on port ${PORT}`);
+  const protocol = server instanceof https.Server ? 'https' : 'http';
+  const protocolEmoji = protocol === 'https' ? '🔒' : '🌐';
+
+  console.log(`🚀 Enhanced signaling server running on port ${PORT} (${protocol.toUpperCase()})`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
 
   // Log network interfaces for easy access
   const os = require('os');
   const interfaces = os.networkInterfaces();
-  console.log('\n📱 Server accessible at:');
-  console.log(`   Local: http://localhost:${PORT}`);
+  console.log(`\n${protocolEmoji} Server accessible at:`);
+  console.log(`   Local: ${protocol}://localhost:${PORT}`);
 
   Object.keys(interfaces).forEach(name => {
     interfaces[name].forEach(iface => {
       if (iface.family === 'IPv4' && !iface.internal) {
-        console.log(`   Network: http://${iface.address}:${PORT}`);
-        console.log(`   Health: http://${iface.address}:${PORT}/health`);
+        console.log(`   Network: ${protocol}://${iface.address}:${PORT}`);
+        console.log(`   Health: ${protocol}://${iface.address}:${PORT}/health`);
       }
     });
   });
