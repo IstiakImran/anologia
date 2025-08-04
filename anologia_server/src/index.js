@@ -11,6 +11,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// / Home page
+app.get("/", (req, res) => {
+  res.json({
+    message: "Welcome to the Video Chat Signaling Server!",
+    version: "1.0.0",
+  });
+});
+
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({
@@ -22,8 +30,8 @@ app.get("/health", (req, res) => {
   });
 });
 
-// HTTPS Configuration
-const useHTTPS = process.env.USE_HTTPS === 'true' || process.env.NODE_ENV === 'production';
+// HTTPS Configuration - Only use HTTPS if explicitly requested AND certificates exist
+const useHTTPS = process.env.USE_HTTPS === 'true' && process.env.NODE_ENV !== 'production';
 let server;
 
 if (useHTTPS) {
@@ -37,12 +45,7 @@ if (useHTTPS) {
       // OpenSSL generated certificates
       { key: 'private-key.pem', cert: 'certificate.pem' },
       // Alternative names
-      { key: 'server-key.pem', cert: 'server-cert.pem' },
-      // Production paths (if specified via env vars)
-      {
-        key: process.env.SSL_KEY_PATH || '/etc/ssl/private/server.key',
-        cert: process.env.SSL_CERT_PATH || '/etc/ssl/certs/server.crt'
-      }
+      { key: 'server-key.pem', cert: 'server-cert.pem' }
     ];
 
     let certificatesFound = false;
@@ -60,16 +63,6 @@ if (useHTTPS) {
 
     if (!certificatesFound) {
       console.log('⚠️  No SSL certificates found. Falling back to HTTP.');
-      console.log('📋 To enable HTTPS, generate certificates using:');
-      console.log('   Option 1 (mkcert - recommended for development):');
-      console.log('     brew install mkcert  # or appropriate package manager');
-      console.log('     mkcert -install');
-      console.log('     mkcert localhost 127.0.0.1 ::1');
-      console.log('');
-      console.log('   Option 2 (OpenSSL):');
-      console.log('     openssl genrsa -out private-key.pem 2048');
-      console.log('     openssl req -new -x509 -key private-key.pem -out certificate.pem -days 365');
-      console.log('');
       server = http.createServer(app);
     } else {
       server = https.createServer(sslOptions, app);
@@ -271,19 +264,23 @@ server.listen(PORT, HOST, () => {
   console.log(`🚀 Enhanced signaling server running on port ${PORT} (${protocol.toUpperCase()})`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
 
-  // Log network interfaces for easy access
-  const os = require('os');
-  const interfaces = os.networkInterfaces();
-  console.log(`\n${protocolEmoji} Server accessible at:`);
-  console.log(`   Local: ${protocol}://localhost:${PORT}`);
+  // Log network interfaces for easy access (only in development)
+  if (process.env.NODE_ENV !== 'production') {
+    const os = require('os');
+    const interfaces = os.networkInterfaces();
+    console.log(`\n${protocolEmoji} Server accessible at:`);
+    console.log(`   Local: ${protocol}://localhost:${PORT}`);
 
-  Object.keys(interfaces).forEach(name => {
-    interfaces[name].forEach(iface => {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        console.log(`   Network: ${protocol}://${iface.address}:${PORT}`);
-        console.log(`   Health: ${protocol}://${iface.address}:${PORT}/health`);
-      }
+    Object.keys(interfaces).forEach(name => {
+      interfaces[name].forEach(iface => {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          console.log(`   Network: ${protocol}://${iface.address}:${PORT}`);
+          console.log(`   Health: ${protocol}://${iface.address}:${PORT}/health`);
+        }
+      });
     });
-  });
-  console.log('\n');
+    console.log('\n');
+  } else {
+    console.log(`${protocolEmoji} Server is running in production mode`);
+  }
 });
